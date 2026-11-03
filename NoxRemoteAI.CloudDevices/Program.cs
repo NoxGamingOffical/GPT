@@ -146,6 +146,59 @@ app.MapGet("/admin/devices/{id:guid}/actions",async(Guid id,HttpContext ctx,Npgs
     return Results.Ok(rows);
 });
 
+
+app.MapGet("/control", (HttpContext ctx) =>
+{
+    ctx.Response.Headers.ContentSecurityPolicy = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+    ctx.Response.Headers.XContentTypeOptions = "nosniff";
+    ctx.Response.Headers.ReferrerPolicy = "no-referrer";
+    return Results.Content("""
+<!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nox Remote AI | Cloud-Steuerung</title>
+<style>
+body{font:16px system-ui;background:#111525;color:#f4f2ff;max-width:680px;margin:48px auto;padding:0 18px}
+h1{color:#bda9ff}label{display:block;margin:18px 0 7px}input,select,button{box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid #6e668c;font:inherit}
+input,select{background:#252a3e;color:white;width:100%}button{background:#7e5ed8;color:white;cursor:pointer;margin:12px 8px 0 0}
+button:disabled{opacity:.5;cursor:default}small{color:#bdb8d2}#status{white-space:pre-wrap;padding:12px;background:#22273a;border-radius:10px;margin-top:16px}
+</style></head><body><h1>Nox Remote AI 🐾</h1><p>Cloud-Teststeuerung. Aktionen werden nur bei einer lokal freigegebenen Sitzung ausgeführt.</p>
+<label for="token">Admin-Token (nur hier eingeben, niemals im Chat teilen)</label><input id="token" type="password" autocomplete="off" spellcheck="false">
+<button id="load">Verbundene Geräte laden</button><label for="device">Gerät auswählen</label><select id="device"><option value="">Erst Geräte laden</option></select>
+<label for="action">Testaktion</label><select id="action"><option value="open_notepad">Windows-Editor öffnen</option><option value="open_calculator">Rechner öffnen</option><option value="screen_info">Bildschirmauflösung lokal anzeigen</option></select>
+<button id="send" disabled>Testbefehl senden</button><button id="check" disabled>Letzten Status prüfen</button>
+<div id="status" role="status">Bereit. Der Token wird nicht gespeichert.</div>
+<p><small>Nur HTTPS verwenden. Admin-Token bleibt im Arbeitsspeicher dieser Seite und wird ausschließlich für autorisierte Anfragen an denselben Server verwendet. Tab schließen, um ihn zu verwerfen.</small></p>
+<script>
+const $=id=>document.getElementById(id);
+const status=message=>$('status').textContent=message;
+async function api(path,method='GET',body){
+ const token=$('token').value.trim();
+ if(!token){throw Error('Bitte Admin-Token eingeben.')}
+ const response=await fetch(path,{method,headers:{'Authorization':'Bearer '+token,...(body?{'Content-Type':'application/json'}:{})},body:body?JSON.stringify(body):undefined,cache:'no-store'});
+ if(!response.ok)throw Error('Serverfehler '+response.status+(response.status===401?' (Token prüfen)':''));
+ return response.status===204?null:response.json();
+}
+$('load').onclick=async()=>{
+ try{status('Lade Geräte …');const devices=await api('/admin/devices');const select=$('device');select.replaceChildren();
+ for(const d of devices){const opt=document.createElement('option');opt.value=d.deviceId;opt.textContent=d.name+' ('+d.deviceId.slice(0,8)+')';select.append(opt);}
+ $('send').disabled=!devices.length;$('check').disabled=!devices.length;
+ status(devices.length?devices.length+' Gerät(e) geladen. Wähle eine Testaktion.':'Noch kein Gerät registriert.');
+ }catch(e){status(e.message);}
+};
+$('send').onclick=async()=>{
+ const id=$('device').value;if(!id)return;
+ const action=$('action').value;
+ if(!confirm('Testaktion '+action+' an das ausgewählte Gerät senden?'))return;
+ try{const r=await api('/admin/devices/'+encodeURIComponent(id)+'/actions','POST',{action});status('Befehl eingereiht: '+r.actionId+'\nPrüfe die Freigabe auf deinem PC.');}
+ catch(e){status(e.message);}
+};
+$('check').onclick=async()=>{
+ try{const r=await api('/admin/devices/'+encodeURIComponent($('device').value)+'/actions');status(r.length?r.slice(0,5).map(a=>a.action+': '+a.state).join('\n'):'Noch keine Aktionen.');}
+ catch(e){status(e.message);}
+};
+</script></body></html>
+""", "text/html; charset=utf-8");
+});
+
 app.Run();
 record EnrollRequest(string Name,string PairingCode);
 
