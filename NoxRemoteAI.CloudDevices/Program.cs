@@ -151,7 +151,7 @@ app.MapGet("/control", (HttpContext ctx) =>
 {
     ctx.Response.Headers.ContentSecurityPolicy = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
     ctx.Response.Headers.XContentTypeOptions = "nosniff";
-    ctx.Response.Headers.ReferrerPolicy = "no-referrer";
+    ctx.Response.Headers["Referrer-Policy"] = "no-referrer";
     return Results.Content("""
 <!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Nox Remote AI | Cloud-Steuerung</title>
