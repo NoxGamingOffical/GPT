@@ -39,7 +39,7 @@ await using (var scope=app.Services.CreateAsyncScope()) {
     """);
     await cmd.ExecuteNonQueryAsync();
 }
-app.MapGet("/health",()=>Results.Ok(new { status="ok",version="1.0",remoteControl=false }));
+app.MapGet("/health",()=>Results.Ok(new { status="ok",version="1.0",remoteControl=true }));
 app.MapPost("/admin/pairings",async(HttpContext ctx,NpgsqlDataSource ds)=>{
     if(!Authorized(ctx,admin!)) return Results.Unauthorized();
     var code=Secret(12);
@@ -84,5 +84,70 @@ app.MapDelete("/admin/devices/{id:guid}",async(Guid id,HttpContext ctx,NpgsqlDat
     cmd.Parameters.AddWithValue("id",id);
     return await cmd.ExecuteNonQueryAsync()==1?Results.NoContent():Results.NotFound();
 });
+
+app.MapPost("/admin/devices/{id:guid}/actions", async (Guid id, RemoteActionRequest request, HttpContext ctx, NpgsqlDataSource ds) =>
+{
+    if (!Authorized(ctx,admin!)) return Results.Unauthorized();
+    if (request.Action is not ("open_notepad" or "open_calculator" or "screen_info")) return Results.BadRequest();
+    await using var cmd=ds.CreateCommand("""
+      INSERT INTO remote_actions(device_id,action,expires_at)
+      SELECT device_id,@action,NOW()+INTERVAL '90 seconds' FROM devices WHERE device_id=@id
+      RETURNING action_id
+      """);
+    cmd.Parameters.AddWithValue("id",id);
+    cmd.Parameters.AddWithValue("action",request.Action);
+    var result=await cmd.ExecuteScalarAsync();
+    return result is null ? Results.NotFound() : Results.Ok(new {actionId=result});
+});
+app.MapPost("/devices/actions/next", async (HttpContext ctx,NpgsqlDataSource ds) =>
+{
+    var bearer=ctx.Request.Headers.Authorization.ToString();
+    if (!bearer.StartsWith("Bearer ",StringComparison.Ordinal)||bearer.Length>200) return Results.Unauthorized();
+    await using var conn=await ds.OpenConnectionAsync();
+    await using var tx=await conn.BeginTransactionAsync();
+    await using var cmd=new NpgsqlCommand("""
+      UPDATE remote_actions SET state='delivered'
+      WHERE action_id=(
+        SELECT a.action_id FROM remote_actions a
+        JOIN devices d ON a.device_id=d.device_id
+        WHERE d.token_hash=@hash AND a.state='pending' AND a.expires_at>NOW()
+        ORDER BY a.created_at LIMIT 1 FOR UPDATE OF a SKIP LOCKED
+      ) RETURNING action_id,action
+      """,conn,tx);
+    cmd.Parameters.AddWithValue("hash",Hash(bearer[7..]));
+    await using var rd=await cmd.ExecuteReaderAsync();
+    object? result=null;
+    if(await rd.ReadAsync()) result=new {actionId=rd.GetGuid(0),action=rd.GetString(1)};
+    await rd.CloseAsync();
+    await tx.CommitAsync();
+    return result is null?Results.NoContent():Results.Ok(result);
+});
+app.MapPost("/devices/actions/{id:guid}/result",async(Guid id,RemoteActionResult result,HttpContext ctx,NpgsqlDataSource ds)=>{
+    var bearer=ctx.Request.Headers.Authorization.ToString();
+    if(!bearer.StartsWith("Bearer ",StringComparison.Ordinal)||bearer.Length>200) return Results.Unauthorized();
+    if(result.Status is not ("completed" or "denied" or "failed")) return Results.BadRequest();
+    await using var cmd=ds.CreateCommand("""
+      UPDATE remote_actions a SET state=@state,finished_at=NOW()
+      FROM devices d WHERE a.action_id=@id AND a.device_id=d.device_id
+      AND d.token_hash=@hash AND a.state='delivered'
+      """);
+    cmd.Parameters.AddWithValue("id",id);
+    cmd.Parameters.AddWithValue("hash",Hash(bearer[7..]));
+    cmd.Parameters.AddWithValue("state",result.Status);
+    return await cmd.ExecuteNonQueryAsync()==1?Results.NoContent():Results.NotFound();
+});
+app.MapGet("/admin/devices/{id:guid}/actions",async(Guid id,HttpContext ctx,NpgsqlDataSource ds)=>{
+    if(!Authorized(ctx,admin!)) return Results.Unauthorized();
+    var rows=new List<object>();
+    await using var cmd=ds.CreateCommand("SELECT action_id,action,state,created_at,finished_at FROM remote_actions WHERE device_id=@id ORDER BY created_at DESC LIMIT 30");
+    cmd.Parameters.AddWithValue("id",id);
+    await using var rd=await cmd.ExecuteReaderAsync();
+    while(await rd.ReadAsync()) rows.Add(new {actionId=rd.GetGuid(0),action=rd.GetString(1),state=rd.GetString(2),createdAt=rd.GetDateTime(3),finishedAt=rd.IsDBNull(4)?(DateTime?)null:rd.GetDateTime(4)});
+    return Results.Ok(rows);
+});
+
 app.Run();
 record EnrollRequest(string Name,string PairingCode);
+
+record RemoteActionRequest(string Action);
+record RemoteActionResult(string Status);
